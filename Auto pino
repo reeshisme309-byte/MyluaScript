@@ -1,0 +1,774 @@
+cat > /mnt/user-data/outputs/AutoPiano_Fluent.lua << 'ENDOFSCRIPT'
+--[[
+╔══════════════════════════════════════════════════════════════╗
+║       KANHA AUTO PIANO  ·  FLUENT MODDED  v3.0              ║
+║       Engine rewrite: VirtualInputManager keyboard sim       ║
+║       Based on MIDIow key_map — works with ALL piano games   ║
+╚══════════════════════════════════════════════════════════════╝
+]]
+
+-- ════════════════════════════════════════════════════════
+--  §1  SAFE LIBRARY LOADER
+-- ════════════════════════════════════════════════════════
+
+local function tryGet(url)
+    local ok, res = pcall(function()
+        return loadstring(game:HttpGet(url, true))()
+    end)
+    return (ok and type(res) == "table") and res or nil
+end
+
+local Fluent =
+    tryGet("https://raw.githubusercontent.com/StyearX/Fluent-modded/main/dist/main.lua") or
+    tryGet("https://raw.githubusercontent.com/Vraigos/Fluent-Moded/main/dist/main.lua")  or
+    tryGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
+
+assert(Fluent, "[AutoPiano] Fluent failed to load. Enable HttpService.")
+
+local SaveManager = tryGet(
+    "https://raw.githubusercontent.com/StyearX/Fluent-modded/main/Addons/SaveManager.lua"
+) or tryGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua")
+
+local InterfaceManager = tryGet(
+    "https://raw.githubusercontent.com/StyearX/Fluent-modded/main/Addons/InterfaceManager.lua"
+) or tryGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua")
+
+-- ════════════════════════════════════════════════════════
+--  §2  SERVICES
+-- ════════════════════════════════════════════════════════
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+
+-- VirtualInputManager is the CORRECT engine for piano games.
+-- Piano games read keyboard input from the player — not RemoteEvents.
+local VIM = game:GetService("VirtualInputManager")
+
+local lp      = Players.LocalPlayer
+local pgui    = lp:WaitForChild("PlayerGui")
+local Options = Fluent.Options
+
+local isMob = UserInputService.TouchEnabled
+           and not UserInputService.KeyboardEnabled
+
+-- ════════════════════════════════════════════════════════
+--  §3  KEY MAP  (MIDI note number → Roblox KeyCode)
+--      Taken directly from MIDIow source (open source).
+--      Covers the full Virtual Piano / Piano Keyboard layout.
+--      MIDI 60 = Middle C (C4).
+-- ════════════════════════════════════════════════════════
+
+local KM = {
+    -- Extended low range (Ctrl+key)
+    [21]={keycode=Enum.KeyCode.One,   ctrl=true},
+    [22]={keycode=Enum.KeyCode.Two,   ctrl=true},
+    [23]={keycode=Enum.KeyCode.Three, ctrl=true},
+    [24]={keycode=Enum.KeyCode.Four,  ctrl=true},
+    [25]={keycode=Enum.KeyCode.Five,  ctrl=true},
+    [26]={keycode=Enum.KeyCode.Six,   ctrl=true},
+    [27]={keycode=Enum.KeyCode.Seven, ctrl=true},
+    [28]={keycode=Enum.KeyCode.Eight, ctrl=true},
+    [29]={keycode=Enum.KeyCode.Nine,  ctrl=true},
+    [30]={keycode=Enum.KeyCode.Zero,  ctrl=true},
+    [31]={keycode=Enum.KeyCode.Q,     ctrl=true},
+    [32]={keycode=Enum.KeyCode.W,     ctrl=true},
+    [33]={keycode=Enum.KeyCode.E,     ctrl=true},
+    [34]={keycode=Enum.KeyCode.R,     ctrl=true},
+    [35]={keycode=Enum.KeyCode.T,     ctrl=true},
+    -- Standard range (C2 upward)
+    [36]={keycode=Enum.KeyCode.One,   shift=false},
+    [37]={keycode=Enum.KeyCode.One,   shift=true},
+    [38]={keycode=Enum.KeyCode.Two,   shift=false},
+    [39]={keycode=Enum.KeyCode.Two,   shift=true},
+    [40]={keycode=Enum.KeyCode.Three, shift=false},
+    [41]={keycode=Enum.KeyCode.Four,  shift=false},
+    [42]={keycode=Enum.KeyCode.Four,  shift=true},
+    [43]={keycode=Enum.KeyCode.Five,  shift=false},
+    [44]={keycode=Enum.KeyCode.Five,  shift=true},
+    [45]={keycode=Enum.KeyCode.Six,   shift=false},
+    [46]={keycode=Enum.KeyCode.Six,   shift=true},
+    [47]={keycode=Enum.KeyCode.Seven, shift=false},
+    [48]={keycode=Enum.KeyCode.Eight, shift=false},
+    [49]={keycode=Enum.KeyCode.Eight, shift=true},
+    [50]={keycode=Enum.KeyCode.Nine,  shift=false},
+    [51]={keycode=Enum.KeyCode.Nine,  shift=true},
+    [52]={keycode=Enum.KeyCode.Zero,  shift=false},
+    [53]={keycode=Enum.KeyCode.Q,     shift=false},
+    [54]={keycode=Enum.KeyCode.Q,     shift=true},
+    [55]={keycode=Enum.KeyCode.W,     shift=false},
+    [56]={keycode=Enum.KeyCode.W,     shift=true},
+    [57]={keycode=Enum.KeyCode.E,     shift=false},
+    [58]={keycode=Enum.KeyCode.E,     shift=true},
+    [59]={keycode=Enum.KeyCode.R,     shift=false},
+    [60]={keycode=Enum.KeyCode.T,     shift=false},   -- C4 Middle C
+    [61]={keycode=Enum.KeyCode.T,     shift=true},    -- Db4
+    [62]={keycode=Enum.KeyCode.Y,     shift=false},   -- D4
+    [63]={keycode=Enum.KeyCode.Y,     shift=true},    -- Eb4
+    [64]={keycode=Enum.KeyCode.U,     shift=false},   -- E4
+    [65]={keycode=Enum.KeyCode.I,     shift=false},   -- F4
+    [66]={keycode=Enum.KeyCode.I,     shift=true},    -- Gb4
+    [67]={keycode=Enum.KeyCode.O,     shift=false},   -- G4
+    [68]={keycode=Enum.KeyCode.O,     shift=true},    -- Ab4
+    [69]={keycode=Enum.KeyCode.P,     shift=false},   -- A4
+    [70]={keycode=Enum.KeyCode.P,     shift=true},    -- Bb4
+    [71]={keycode=Enum.KeyCode.A,     shift=false},   -- B4
+    [72]={keycode=Enum.KeyCode.S,     shift=false},   -- C5
+    [73]={keycode=Enum.KeyCode.S,     shift=true},    -- Db5
+    [74]={keycode=Enum.KeyCode.D,     shift=false},   -- D5
+    [75]={keycode=Enum.KeyCode.D,     shift=true},    -- Eb5
+    [76]={keycode=Enum.KeyCode.F,     shift=false},   -- E5
+    [77]={keycode=Enum.KeyCode.G,     shift=false},   -- F5
+    [78]={keycode=Enum.KeyCode.G,     shift=true},    -- Gb5
+    [79]={keycode=Enum.KeyCode.H,     shift=false},   -- G5
+    [80]={keycode=Enum.KeyCode.H,     shift=true},    -- Ab5
+    [81]={keycode=Enum.KeyCode.J,     shift=false},   -- A5
+    [82]={keycode=Enum.KeyCode.J,     shift=true},    -- Bb5
+    [83]={keycode=Enum.KeyCode.K,     shift=false},   -- B5
+    [84]={keycode=Enum.KeyCode.L,     shift=false},   -- C6
+    [85]={keycode=Enum.KeyCode.L,     shift=true},    -- Db6
+    [86]={keycode=Enum.KeyCode.Z,     shift=false},   -- D6
+    [87]={keycode=Enum.KeyCode.Z,     shift=true},    -- Eb6
+    [88]={keycode=Enum.KeyCode.X,     shift=false},   -- E6
+    [89]={keycode=Enum.KeyCode.C,     shift=false},   -- F6
+    [90]={keycode=Enum.KeyCode.C,     shift=true},    -- Gb6
+    [91]={keycode=Enum.KeyCode.V,     shift=false},   -- G6
+    [92]={keycode=Enum.KeyCode.V,     shift=true},    -- Ab6
+    [93]={keycode=Enum.KeyCode.B,     shift=false},   -- A6
+    [94]={keycode=Enum.KeyCode.B,     shift=true},    -- Bb6
+    [95]={keycode=Enum.KeyCode.N,     shift=false},   -- B6
+    [96]={keycode=Enum.KeyCode.M,     shift=false},   -- C7
+    [97]={keycode=Enum.KeyCode.M,     shift=true},    -- Db7
+    -- Extended high range (Ctrl+key)
+    [98] ={keycode=Enum.KeyCode.U,    ctrl=true},
+    [99] ={keycode=Enum.KeyCode.I,    ctrl=true},
+    [100]={keycode=Enum.KeyCode.O,    ctrl=true},
+    [101]={keycode=Enum.KeyCode.P,    ctrl=true},
+    [102]={keycode=Enum.KeyCode.A,    ctrl=true},
+    [103]={keycode=Enum.KeyCode.S,    ctrl=true},
+    [104]={keycode=Enum.KeyCode.D,    ctrl=true},
+    [105]={keycode=Enum.KeyCode.F,    ctrl=true},
+    [106]={keycode=Enum.KeyCode.G,    ctrl=true},
+    [107]={keycode=Enum.KeyCode.H,    ctrl=true},
+    [108]={keycode=Enum.KeyCode.J,    ctrl=true},
+}
+
+-- ════════════════════════════════════════════════════════
+--  §4  NOTE NAME → MIDI NUMBER
+--      "C4" → 60   "Bb3" → 58   "F#5" → 78
+-- ════════════════════════════════════════════════════════
+
+local NOTE_SEMI = {C=0,D=2,E=4,F=5,G=7,A=9,B=11}
+
+local function noteToMidi(str)
+    -- Accepts: C4  Db4  D#4  Bb3  F#5  etc.
+    local letter, acc, oct = str:match("^([A-Ga-g])([b#]?)(%d+)$")
+    if not letter then return nil end
+    letter = letter:upper()
+    local semi = NOTE_SEMI[letter]
+    if not semi then return nil end
+    if acc == "b" then semi = semi - 1
+    elseif acc == "#" then semi = semi + 1 end
+    return (tonumber(oct) + 1) * 12 + semi
+end
+
+-- Pre-build a name→midi table for every note string used in songs
+local NOTE_CACHE = {}
+local function midi(note)
+    if NOTE_CACHE[note] then return NOTE_CACHE[note] end
+    -- Also handle flat-name style: "Db4" → D=2 -1 = 1, oct4 → 61
+    local n = noteToMidi(note)
+    NOTE_CACHE[note] = n
+    return n
+end
+
+-- ════════════════════════════════════════════════════════
+--  §5  KEYBOARD ENGINE  (VirtualInputManager)
+-- ════════════════════════════════════════════════════════
+
+local shiftHeld = false
+local ctrlHeld  = false
+
+local function setMod(key, held, wantHeld)
+    if wantHeld == held then return held end
+    VIM:SendKeyEvent(wantHeld, key, false, game)
+    return wantHeld
+end
+
+local function ReleaseAll()
+    if shiftHeld then VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift,   false, game) shiftHeld=false end
+    if ctrlHeld  then VIM:SendKeyEvent(false, Enum.KeyCode.LeftControl, false, game) ctrlHeld=false  end
+end
+
+-- Press a note by MIDI number. Presses + immediately releases.
+local function PressNote(midiNum, transpose)
+    local n = midiNum + (transpose or 0)
+    local k = KM[n]
+    if not k then return end
+
+    -- Update modifier state
+    shiftHeld = setMod(Enum.KeyCode.LeftShift,   shiftHeld, k.shift == true)
+    ctrlHeld  = setMod(Enum.KeyCode.LeftControl, ctrlHeld,  k.ctrl  == true)
+
+    -- Fire the note key
+    VIM:SendKeyEvent(true,  k.keycode, false, game)
+    VIM:SendKeyEvent(false, k.keycode, false, game)
+end
+
+-- Press a note by name string ("C4", "Bb3", etc.)
+local function PressNoteByName(name, transpose)
+    local m = midi(name)
+    if not m then return end
+    PressNote(m, transpose or 0)
+end
+
+-- ════════════════════════════════════════════════════════
+--  §6  CONFIG & STATE
+-- ════════════════════════════════════════════════════════
+
+local Config = {Speed=1.0, Loop=false, Transpose=0, Debug=false}
+local State  = {Playing=false, CurrentSong=1, PlayThread=nil}
+
+-- ════════════════════════════════════════════════════════
+--  §7  SONG DATABASE  (15 songs)
+--      Format: { note_string, delay_seconds }
+--      note_string uses standard notation: C4 Db4 D4 Eb4 etc.
+-- ════════════════════════════════════════════════════════
+
+local Songs = {
+    {name="Twinkle Twinkle",bpm=110,notes={
+        {"C4",.3},{"C4",.3},{"G4",.3},{"G4",.3},{"A4",.3},{"A4",.3},{"G4",.6},
+        {"F4",.3},{"F4",.3},{"E4",.3},{"E4",.3},{"D4",.3},{"D4",.3},{"C4",.6},
+        {"G4",.3},{"G4",.3},{"F4",.3},{"F4",.3},{"E4",.3},{"E4",.3},{"D4",.6},
+        {"G4",.3},{"G4",.3},{"F4",.3},{"F4",.3},{"E4",.3},{"E4",.3},{"D4",.6},
+        {"C4",.3},{"C4",.3},{"G4",.3},{"G4",.3},{"A4",.3},{"A4",.3},{"G4",.6},
+        {"F4",.3},{"F4",.3},{"E4",.3},{"E4",.3},{"D4",.3},{"D4",.3},{"C4",.6},
+    }},
+    {name="Happy Birthday",bpm=100,notes={
+        {"C4",.3},{"C4",.15},{"D4",.45},{"C4",.45},{"F4",.45},{"E4",.9},
+        {"C4",.3},{"C4",.15},{"D4",.45},{"C4",.45},{"G4",.45},{"F4",.9},
+        {"C4",.3},{"C4",.15},{"C5",.45},{"A4",.45},{"F4",.45},{"E4",.45},{"D4",.9},
+        {"Bb4",.3},{"Bb4",.15},{"A4",.45},{"F4",.45},{"G4",.45},{"F4",.9},
+    }},
+    {name="Für Elise",bpm=138,notes={
+        {"E5",.2},{"Eb5",.2},{"E5",.2},{"Eb5",.2},{"E5",.2},
+        {"B4",.2},{"D5",.2},{"C5",.2},{"A4",.4},
+        {"C4",.2},{"E4",.2},{"A4",.2},{"B4",.4},
+        {"E4",.2},{"Ab4",.2},{"B4",.2},{"C5",.4},
+        {"E4",.2},{"E5",.2},{"Eb5",.2},{"E5",.2},{"Eb5",.2},{"E5",.2},
+        {"B4",.2},{"D5",.2},{"C5",.2},{"A4",.4},
+        {"C4",.2},{"E4",.2},{"A4",.2},{"B4",.4},
+        {"E4",.2},{"C5",.2},{"B4",.2},{"A4",.6},
+    }},
+    {name="Megalovania",bpm=200,notes={
+        {"D4",.15},{"D4",.15},{"D5",.3},{"A4",.3},{"Ab4",.3},{"G4",.3},{"F4",.3},{"D4",.15},{"F4",.15},{"G4",.3},
+        {"C4",.15},{"C4",.15},{"D5",.3},{"A4",.3},{"Ab4",.3},{"G4",.3},{"F4",.3},{"D4",.15},{"F4",.15},{"G4",.3},
+        {"B3",.15},{"B3",.15},{"D5",.3},{"A4",.3},{"Ab4",.3},{"G4",.3},{"F4",.3},{"D4",.15},{"F4",.15},{"G4",.3},
+        {"Bb3",.15},{"Bb3",.15},{"D5",.3},{"A4",.3},{"Ab4",.3},{"G4",.3},{"F4",.3},{"D4",.15},{"F4",.15},{"G4",.3},
+    }},
+    {name="Among Us Theme",bpm=120,notes={
+        {"F4",.3},{"Ab4",.3},{"Bb4",.3},{"B4",.3},{"Bb4",.3},{"Ab4",.6},{"F4",.3},
+        {"Ab4",.3},{"Ab4",.3},{"G4",.3},{"Ab4",.3},{"Eb4",.9},
+        {"F4",.3},{"Ab4",.3},{"Bb4",.3},{"B4",.3},{"Bb4",.3},{"Ab4",.3},{"F4",.3},
+        {"Ab4",.3},{"Ab4",.3},{"G4",.3},{"Ab4",.3},{"Eb4",.6},
+    }},
+    {name="Jingle Bells",bpm=140,notes={
+        {"E4",.25},{"E4",.25},{"E4",.5},{"E4",.25},{"E4",.25},{"E4",.5},
+        {"E4",.25},{"G4",.25},{"C4",.25},{"D4",.25},{"E4",1},
+        {"F4",.25},{"F4",.25},{"F4",.25},{"F4",.25},{"F4",.25},{"E4",.25},{"E4",.25},{"E4",.25},
+        {"E4",.25},{"D4",.25},{"D4",.25},{"E4",.25},{"D4",.5},{"G4",.5},
+        {"E4",.25},{"E4",.25},{"E4",.5},{"E4",.25},{"E4",.25},{"E4",.5},
+        {"E4",.25},{"G4",.25},{"C4",.25},{"D4",.25},{"E4",1},
+        {"F4",.25},{"F4",.25},{"F4",.25},{"F4",.25},{"F4",.25},{"E4",.25},{"E4",.25},{"E4",.25},
+        {"G4",.25},{"G4",.25},{"F4",.25},{"D4",.25},{"C4",1},
+    }},
+    {name="Ode To Joy",bpm=120,notes={
+        {"E4",.3},{"E4",.3},{"F4",.3},{"G4",.3},{"G4",.3},{"F4",.3},{"E4",.3},{"D4",.3},
+        {"C4",.3},{"C4",.3},{"D4",.3},{"E4",.3},{"E4",.45},{"D4",.15},{"D4",.6},
+        {"E4",.3},{"E4",.3},{"F4",.3},{"G4",.3},{"G4",.3},{"F4",.3},{"E4",.3},{"D4",.3},
+        {"C4",.3},{"C4",.3},{"D4",.3},{"E4",.3},{"D4",.45},{"C4",.15},{"C4",.6},
+    }},
+    {name="Super Mario Bros",bpm=200,notes={
+        {"E5",.15},{"E5",.3},{"E5",.3},{"C5",.15},{"E5",.3},{"G5",.6},{"G4",.6},
+        {"C5",.45},{"G4",.3},{"E4",.45},{"A4",.3},{"B4",.3},{"Bb4",.15},{"A4",.3},
+        {"G4",.2},{"E5",.2},{"G5",.2},{"A5",.3},{"F5",.15},{"G5",.3},
+        {"E5",.3},{"C5",.15},{"D5",.15},{"B4",.45},
+    }},
+    {name="Pirates of Caribbean",bpm=140,notes={
+        {"A4",.2},{"B4",.2},{"C5",.3},{"C5",.15},{"C5",.15},{"D5",.15},{"E5",.15},
+        {"E5",.3},{"E5",.15},{"E5",.15},{"F5",.15},{"E5",.15},
+        {"D5",.3},{"D5",.15},{"D5",.15},{"E5",.15},{"F5",.15},{"E5",.6},
+        {"A4",.2},{"B4",.2},{"C5",.3},{"C5",.15},{"C5",.15},{"D5",.15},{"E5",.15},
+        {"E5",.3},{"E5",.15},{"E5",.15},{"F5",.15},{"E5",.15},
+        {"D5",.3},{"D5",.15},{"D5",.15},{"G5",.15},{"F5",.15},{"E5",.9},
+    }},
+    {name="Tetris",bpm=160,notes={
+        {"E5",.3},{"B4",.15},{"C5",.15},{"D5",.3},{"C5",.15},{"B4",.15},
+        {"A4",.3},{"A4",.15},{"C5",.15},{"E5",.3},{"D5",.15},{"C5",.15},
+        {"B4",.45},{"C5",.15},{"D5",.3},{"E5",.3},{"C5",.3},{"A4",.3},{"A4",.6},
+        {"D5",.45},{"F5",.15},{"A5",.3},{"G5",.15},{"F5",.15},
+        {"E5",.45},{"C5",.15},{"E5",.3},{"D5",.15},{"C5",.15},
+        {"B4",.3},{"B4",.15},{"C5",.15},{"D5",.3},{"E5",.3},{"C5",.3},{"A4",.3},{"A4",.6},
+    }},
+    {name="Never Gonna Give You Up",bpm=113,notes={
+        {"A4",.27},{"B4",.27},{"D5",.27},{"B4",.27},{"Gb5",.54},{"Gb5",.27},{"E5",.81},
+        {"A4",.27},{"B4",.27},{"D5",.27},{"B4",.27},{"E5",.54},{"E5",.27},{"D5",.54},{"C5",.27},{"B4",.27},
+        {"A4",.27},{"B4",.27},{"D5",.27},{"B4",.27},{"D5",.54},{"E5",.27},{"C5",.54},{"B4",.27},{"A4",.27},
+        {"A4",.54},{"D5",.54},{"D5",.27},{"C5",.27},{"B4",.54},
+        {"A4",.54},{"A4",.27},{"D5",.54},{"D5",.27},{"E5",.27},{"C5",.54},{"B4",.27},{"A4",.9},
+    }},
+    {name="Coffin Dance",bpm=126,notes={
+        {"G4",.25},{"Ab4",.25},{"G4",.25},{"Eb4",.75},{"G4",.25},{"Ab4",.25},{"G4",.25},{"Eb4",.75},
+        {"G4",.25},{"F4",.25},{"Eb4",.25},{"F4",.25},{"G4",.5},{"Ab4",.5},
+        {"G4",.25},{"F4",.25},{"Eb4",.25},{"F4",.25},{"G4",1},
+        {"G4",.25},{"Ab4",.25},{"G4",.25},{"Eb4",.75},{"G4",.25},{"Ab4",.25},{"G4",.25},{"Eb4",.75},
+        {"Bb4",.5},{"Ab4",.5},{"G4",.5},{"F4",.5},{"Eb4",1},
+    }},
+    {name="Despacito Intro",bpm=176,notes={
+        {"B4",.2},{"Ab4",.2},{"E4",.4},{"E4",.2},{"Gb4",.2},{"Ab4",.2},{"B4",.2},{"Ab4",.2},{"E4",.6},
+        {"B4",.2},{"Ab4",.2},{"E4",.4},{"E4",.2},{"Gb4",.2},{"Ab4",.2},{"B4",.2},{"Ab4",.2},{"Gb4",.4},{"E4",.2},
+        {"Gb4",.6},
+    }},
+    {name="All Star",bpm=104,notes={
+        {"G4",.29},{"G4",.29},{"G4",.29},{"G4",.29},{"A4",.29},{"G4",.29},{"F4",.29},
+        {"G4",.58},{"F4",.29},{"F4",.29},{"F4",.29},{"F4",.29},{"G4",.29},{"F4",.29},{"E4",.87},
+        {"G4",.29},{"G4",.29},{"G4",.29},{"G4",.29},{"A4",.29},{"G4",.29},{"F4",.29},
+        {"G4",.58},{"F4",.29},{"F4",.29},{"F4",.29},{"G4",.29},{"A4",.29},{"G4",.58},
+        {"E4",.29},{"F4",.29},{"G4",.29},{"F4",.29},{"E4",.87},
+    }},
+    {name="Mary Had A Little Lamb",bpm=110,notes={
+        {"E4",.3},{"D4",.3},{"C4",.3},{"D4",.3},{"E4",.3},{"E4",.3},{"E4",.6},
+        {"D4",.3},{"D4",.3},{"D4",.6},{"E4",.3},{"G4",.3},{"G4",.6},
+        {"E4",.3},{"D4",.3},{"C4",.3},{"D4",.3},{"E4",.3},{"E4",.3},{"E4",.3},{"E4",.3},
+        {"D4",.3},{"D4",.3},{"E4",.3},{"D4",.3},{"C4",.9},
+    }},
+}
+local SongNames={}; for _,s in ipairs(Songs) do table.insert(SongNames,s.name) end
+
+-- Pre-convert all note names to MIDI numbers at load time
+-- (avoids per-note string parsing during playback)
+for _,song in ipairs(Songs) do
+    for _,entry in ipairs(song.notes) do
+        entry.midi = midi(entry[1])
+    end
+end
+
+-- ════════════════════════════════════════════════════════
+--  §8  PLAY / STOP
+-- ════════════════════════════════════════════════════════
+
+local function DoStop(silent)
+    State.Playing = false
+    if State.PlayThread then
+        task.cancel(State.PlayThread)
+        State.PlayThread = nil
+    end
+    ReleaseAll()
+    pcall(function() Options.PlayToggle:SetValue(false) end)
+    if not silent then
+        Fluent:Notify({Title="Piano",Content="Stopped",Type="Warning",Duration=2})
+    end
+end
+
+local function DoPlay()
+    if State.Playing then DoStop(true) end
+
+    local song  = Songs[State.CurrentSong]
+    local total = #song.notes
+    State.Playing = true
+
+    Fluent:Notify({
+        Title      = "▶  Playing",
+        Content    = song.name,
+        SubContent = song.bpm.." BPM · "..total.." notes",
+        Type       = "Success",
+        Duration   = 3,
+    })
+
+    State.PlayThread = task.spawn(function()
+        repeat
+            for _,entry in ipairs(song.notes) do
+                if not State.Playing then
+                    ReleaseAll(); return
+                end
+                -- VirtualInputManager keyboard press — works with ALL piano games
+                PressNote(entry.midi or 0, Config.Transpose)
+                if Config.Debug then
+                    print("[Piano]", entry[1], "→ midi", entry.midi, "+ transpose", Config.Transpose)
+                end
+                task.wait(entry[2] / Config.Speed)
+            end
+        until not Config.Loop or not State.Playing
+
+        if State.Playing then
+            State.Playing = false
+            ReleaseAll()
+            pcall(function() Options.PlayToggle:SetValue(false) end)
+            Fluent:Notify({Title="Finished",Content=song.name,Type="Success",Duration=3})
+        end
+    end)
+end
+
+-- ════════════════════════════════════════════════════════
+--  §9  CAPTURE FLUENT'S SCREENGUI via ChildAdded
+-- ════════════════════════════════════════════════════════
+
+local FluentGui  = nil
+local guiVisible = true
+
+local _cap = pgui.ChildAdded:Connect(function(c)
+    if c:IsA("ScreenGui") then FluentGui = c end
+end)
+
+-- ════════════════════════════════════════════════════════
+--  §10  FLUENT WINDOW
+-- ════════════════════════════════════════════════════════
+
+local Window = Fluent:CreateWindow({
+    Title        = "Kanha Piano",
+    SubTitle     = "Auto Player · v3.0",
+    TabWidth     = isMob and 100 or 130,
+    Size         = isMob and UDim2.fromOffset(440,480) or UDim2.fromOffset(560,540),
+    Acrylic      = true,
+    Theme        = "Dark",
+    MinimizeKey  = Enum.KeyCode.RightControl,
+    Search       = false,
+    Tags         = {{Text=" v3.0 ",Color=Color3.fromRGB(0,190,220)},
+                    {Text=" VIM Engine ",Color=Color3.fromRGB(100,40,200)}},
+    UserInfoTop      = true,
+    UserInfoTitle    = "Auto Piano",
+    UserInfoSubtitle = lp.DisplayName,
+    UserInfoColor    = Color3.fromRGB(0,200,240),
+    Animated         = true,
+})
+
+task.defer(function() _cap:Disconnect() end)
+
+-- Fallback if ChildAdded missed it
+if not FluentGui then
+    for _,g in ipairs(pgui:GetChildren()) do
+        if g:IsA("ScreenGui") and g.Name ~= "KanhaPianoPill" then
+            FluentGui = g
+        end
+    end
+end
+
+local Tabs = {
+    Play     = Window:AddTab({Title="Play",     Icon="music"   }),
+    Songs    = Window:AddTab({Title="Songs",    Icon="disc"    }),
+    Settings = Window:AddTab({Title="Settings", Icon="settings"}),
+    Info     = Window:AddTab({Title="Info",     Icon="info"    }),
+}
+
+-- ════════════════════════════════════════════════════════
+--  §11  TOGGLE PILL  (bottom-right, always visible)
+-- ════════════════════════════════════════════════════════
+
+local oldPill = pgui:FindFirstChild("KanhaPianoPill")
+if oldPill then oldPill:Destroy() end
+
+local PillGui = Instance.new("ScreenGui")
+PillGui.Name            = "KanhaPianoPill"
+PillGui.ResetOnSpawn    = false
+PillGui.DisplayOrder    = 9999
+PillGui.IgnoreGuiInset  = false
+PillGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+PillGui.Parent          = pgui
+
+local PS = isMob and 60 or 48
+
+local Glow = Instance.new("Frame")
+Glow.Size               = UDim2.fromOffset(PS+14,PS+14)
+Glow.AnchorPoint        = Vector2.new(1,1)
+Glow.Position           = UDim2.new(1,-5,1,-5)
+Glow.BackgroundColor3   = Color3.fromRGB(0,180,255)
+Glow.BackgroundTransparency = 0.7
+Glow.BorderSizePixel    = 0
+Glow.Parent             = PillGui
+local _gc=Instance.new("UICorner"); _gc.CornerRadius=UDim.new(1,0); _gc.Parent=Glow
+
+local Pill = Instance.new("TextButton")
+Pill.Name               = "Pill"
+Pill.Size               = UDim2.fromOffset(PS,PS)
+Pill.AnchorPoint        = Vector2.new(1,1)
+Pill.Position           = UDim2.new(1,-12,1,-12)
+Pill.BackgroundColor3   = Color3.fromRGB(14,10,40)
+Pill.Text               = "🎹"
+Pill.TextSize           = isMob and 26 or 22
+Pill.Font               = Enum.Font.GothamBold
+Pill.TextColor3         = Color3.fromRGB(0,220,255)
+Pill.AutoButtonColor    = false
+Pill.BorderSizePixel    = 0
+Pill.ZIndex             = 2
+Pill.Parent             = PillGui
+local _pc=Instance.new("UICorner"); _pc.CornerRadius=UDim.new(1,0); _pc.Parent=Pill
+local _ps=Instance.new("UIStroke"); _ps.Color=Color3.fromRGB(0,180,255); _ps.Thickness=1.5; _ps.Parent=Pill
+
+local PillLbl = Instance.new("TextLabel")
+PillLbl.Size               = UDim2.fromOffset(PS+10,16)
+PillLbl.AnchorPoint        = Vector2.new(1,1)
+PillLbl.Position           = UDim2.new(1,-7,1,-14-PS)
+PillLbl.BackgroundTransparency = 1
+PillLbl.Text               = "CLOSE"
+PillLbl.TextSize           = 9
+PillLbl.Font               = Enum.Font.GothamBold
+PillLbl.TextColor3         = Color3.fromRGB(0,180,220)
+PillLbl.TextXAlignment     = Enum.TextXAlignment.Center
+PillLbl.Parent             = PillGui
+
+-- Animated glow
+local gt=0
+local function hsvC(h,s,v)
+    local i=math.floor(h*6); local f=h*6-i
+    local p=v*(1-s); local q=v*(1-f*s); local t2=v*(1-(1-f)*s)
+    i=i%6
+    if i==0 then return Color3.new(v,t2,p) elseif i==1 then return Color3.new(q,v,p)
+    elseif i==2 then return Color3.new(p,v,t2) elseif i==3 then return Color3.new(p,q,v)
+    elseif i==4 then return Color3.new(t2,p,v) else return Color3.new(v,p,q) end
+end
+RunService.RenderStepped:Connect(function(dt)
+    gt=gt+dt*2
+    Glow.BackgroundTransparency=0.65+0.2*math.sin(gt)
+    local c=hsvC((gt/6.28)%1,0.7,1)
+    Glow.BackgroundColor3=c; _ps.Color=c
+end)
+
+Pill.MouseEnter:Connect(function()
+    TweenService:Create(Pill,TweenInfo.new(.1),{BackgroundColor3=Color3.fromRGB(0,45,70)}):Play()
+end)
+Pill.MouseLeave:Connect(function()
+    TweenService:Create(Pill,TweenInfo.new(.1),{BackgroundColor3=Color3.fromRGB(14,10,40)}):Play()
+end)
+
+local function SetVisible(v)
+    guiVisible=v
+    if FluentGui then
+        FluentGui.Enabled=v
+    else
+        for _,g in ipairs(pgui:GetChildren()) do
+            if g:IsA("ScreenGui") and g.Name~="KanhaPianoPill" then g.Enabled=v end
+        end
+    end
+    PillLbl.Text    = v and "CLOSE" or "OPEN"
+    Pill.TextColor3 = v and Color3.fromRGB(0,220,255) or Color3.fromRGB(90,90,140)
+    local big=UDim2.fromOffset(PS+8,PS+8); local nrm=UDim2.fromOffset(PS,PS)
+    TweenService:Create(Pill,TweenInfo.new(.1,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=big}):Play()
+    task.delay(.12,function()
+        TweenService:Create(Pill,TweenInfo.new(.2,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=nrm}):Play()
+    end)
+end
+
+Pill.MouseButton1Click:Connect(function() SetVisible(not guiVisible) end)
+Pill.TouchTap:Connect(function() SetVisible(not guiVisible) end)
+
+UserInputService.InputBegan:Connect(function(inp,gpe)
+    if gpe then return end
+    if inp.KeyCode==Enum.KeyCode.RightControl then SetVisible(not guiVisible) end
+end)
+
+-- ════════════════════════════════════════════════════════
+--  §12  PLAY TAB
+-- ════════════════════════════════════════════════════════
+
+Tabs.Play:AddSection("Song","disc"):AddDropdown("SongSelect",{
+    Title="Select Song", Icon="list-music",
+    Values=SongNames, Default=SongNames[1],
+    Description="Song that will be played",
+    Callback=function(v)
+        for i,s in ipairs(Songs) do if s.name==v then State.CurrentSong=i; break end end
+    end,
+})
+
+local secCtrl=Tabs.Play:AddSection("Controls","play-circle")
+secCtrl:AddToggle("PlayToggle",{
+    Title="Playing", Icon="play", Default=false,
+    Description="ON = play  ·  OFF = stop",
+    Callback=function(en)
+        if en then DoPlay()
+        elseif State.Playing then DoStop(false) end
+    end,
+})
+secCtrl:AddButton({
+    Title="↺  Restart", Icon="rotate-ccw",
+    Description="Stop and restart",
+    Callback=function()
+        DoStop(true); task.wait(0.08)
+        Options.PlayToggle:SetValue(true)
+    end,
+})
+
+local secOpts=Tabs.Play:AddSection("Options","sliders-horizontal")
+secOpts:AddSlider("SpeedSlider",{
+    Title="Speed", Icon="gauge",
+    Min=25, Max=400, Default=100, Rounding=0,
+    Description="100 = normal  ·  200 = double speed",
+    Callback=function(v) Config.Speed=v/100 end,
+})
+secOpts:AddToggle("LoopToggle",{
+    Title="Loop", Icon="repeat", Default=false,
+    Description="Repeat when finished",
+    Callback=function(v) Config.Loop=v end,
+})
+secOpts:AddKeybind("PlayKeybind",{
+    Title="Play / Stop Key", Icon="keyboard",
+    Default="P", Mode="Toggle",
+    Description="Hotkey to toggle playback",
+    Callback=function()
+        Options.PlayToggle:SetValue(not State.Playing)
+    end,
+})
+
+-- ════════════════════════════════════════════════════════
+--  §13  SONGS TAB
+-- ════════════════════════════════════════════════════════
+
+local sLib=Tabs.Songs:AddSection("Library","library")
+sLib:AddParagraph({Title="15 songs",Content="Click to select · then go to Play tab."})
+sLib:AddDivider()
+
+local function AddRow(parent,idx)
+    local s=Songs[idx]
+    parent:AddButton({
+        Title=s.name, Icon="music-2",
+        Description=s.bpm.." BPM · "..#s.notes.." notes",
+        Callback=function()
+            State.CurrentSong=idx
+            Options.SongSelect:SetValue(s.name)
+            Fluent:Notify({Title="Selected",Content=s.name,Type="Info",Duration=2})
+        end,
+    })
+end
+local groups={
+    {label="Classics",   idx={1,2,7,8}         },
+    {label="Game OST",   idx={4,9,10,11}        },
+    {label="Pop & Misc", idx={5,6,12,13,14,15}  },
+    {label="Piano Solo", idx={3}                },
+}
+local shown={}
+for _,g in ipairs(groups) do
+    local s=Tabs.Songs:AddSection(g.label,"music")
+    for _,i in ipairs(g.idx) do if Songs[i] and not shown[i] then shown[i]=true; AddRow(s,i) end end
+end
+local misc=Tabs.Songs:AddSection("Others","more-horizontal")
+for i=1,#Songs do if not shown[i] then AddRow(misc,i) end end
+
+-- ════════════════════════════════════════════════════════
+--  §14  SETTINGS TAB
+-- ════════════════════════════════════════════════════════
+
+local secTrans=Tabs.Settings:AddSection("Transpose","arrow-up-down")
+secTrans:AddSlider("TransposeSlider",{
+    Title="Semitones", Icon="move-vertical",
+    Min=-12, Max=12, Default=0, Rounding=0,
+    Description="Shift all notes ±12 semitones",
+    Callback=function(v) Config.Transpose=v end,
+})
+
+-- Test: press a single C4 to verify VIM is working
+Tabs.Settings:AddSection("Test","terminal"):AddButton({
+    Title="Test: Fire C4", Icon="music",
+    Description="Sends a C4 keypress via VirtualInputManager",
+    Callback=function()
+        PressNoteByName("C4", Config.Transpose)
+        Fluent:Notify({
+            Title="Test Fired",
+            Content="C4 → MIDI "..tostring(midi("C4")).." → Key T (no shift)",
+            SubContent="If your piano didn't play, make sure you're sitting at it",
+            Type="Info", Duration=4,
+        })
+    end,
+})
+
+Tabs.Settings:AddSection("Debug","bug"):AddToggle("DebugToggle",{
+    Title="Debug Mode", Icon="bug", Default=false,
+    Description="Print note events to output",
+    Callback=function(v) Config.Debug=v end,
+})
+
+if InterfaceManager and SaveManager then
+    SaveManager:SetLibrary(Fluent)
+    InterfaceManager:SetLibrary(Fluent)
+    SaveManager:IgnoreThemeSettings()
+    InterfaceManager:SetFolder("KanhaPiano")
+    SaveManager:SetFolder("KanhaPiano")
+    InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+    SaveManager:BuildConfigSection(Tabs.Settings)
+end
+
+-- ════════════════════════════════════════════════════════
+--  §15  INFO TAB
+-- ════════════════════════════════════════════════════════
+
+Tabs.Info:AddSection("About","info"):AddParagraph({
+    Title="Kanha Piano v3.0 — VIM Engine",
+    Content="v3.0 complete rewrite:\n"
+        .."· VirtualInputManager:SendKeyEvent() — the correct engine\n"
+        .."· Same key_map as MIDIow (open source)\n"
+        .."· Works with ALL Roblox piano games that use keyboard input\n"
+        .."· Note names → MIDI numbers pre-computed at load\n"
+        .."· shift/ctrl modifiers handled per note\n"
+        .."· 🎹 pill bottom-right, mobile-friendly\n"
+        .."· ChildAdded capture for Fluent GUI reference\n\n"
+        .."NOTE: You MUST be seated at / near the piano in-game.\n"
+        .."The game must have focus (not minimized).",
+})
+Tabs.Info:AddSection("API","terminal"):AddParagraph({
+    Title="_G.Piano",
+    Content="_G.Piano.Play()\n_G.Piano.Stop()\n_G.Piano.SetSong(n)   — 1 to 15\n"
+        .."_G.Piano.SetSpeed(x) — 1.0 = normal\n"
+        .."_G.Piano.SetLoop(bool)\n"
+        .."_G.Piano.Transpose(n) — ±12\n"
+        .."_G.Piano.Show() / .Hide() / .Toggle()",
+})
+
+-- ════════════════════════════════════════════════════════
+--  §16  GLOBAL API
+-- ════════════════════════════════════════════════════════
+
+_G.Piano={
+    Play     =function() Options.PlayToggle:SetValue(true)  end,
+    Stop     =function() Options.PlayToggle:SetValue(false) end,
+    SetSong  =function(n)
+        n=math.clamp(n,1,#Songs); State.CurrentSong=n
+        Options.SongSelect:SetValue(Songs[n].name)
+    end,
+    SetSpeed =function(x)
+        Config.Speed=math.clamp(x,.1,10)
+        Options.SpeedSlider:SetValue(math.round(Config.Speed*100))
+    end,
+    SetLoop  =function(v) Config.Loop=v; Options.LoopToggle:SetValue(v) end,
+    Transpose=function(n)
+        Config.Transpose=math.clamp(n,-12,12)
+        Options.TransposeSlider:SetValue(Config.Transpose)
+    end,
+    Show     =function() SetVisible(true)  end,
+    Hide     =function() SetVisible(false) end,
+    Toggle   =function() SetVisible(not guiVisible) end,
+    Songs=Songs, Config=Config, State=State,
+}
+
+-- ════════════════════════════════════════════════════════
+--  §17  STARTUP
+-- ════════════════════════════════════════════════════════
+
+Window:SelectTab(1)
+
+Fluent:Notify({
+    Title      = "Kanha Piano v3.0 Ready",
+    Content    = "Engine: VirtualInputManager (keyboard sim)",
+    SubContent = "🎹 pill bottom-right · sit at the piano first!",
+    Type       = "Success",
+    Duration   = 6,
+})
+
+if SaveManager then pcall(function() SaveManager:LoadAutoloadConfig() end) end
+
+print("╔══════════════════════════════════════════╗")
+print("║  Kanha Piano v3.0 — VIM Engine           ║")
+print("║  Uses VirtualInputManager:SendKeyEvent   ║")
+print("║  Sit at the in-game piano before playing ║")
+print("║  _G.Piano.Play() / .Stop()               ║")
+print("╚══════════════════════════════════════════╝")
+ENDOFSCRIPT
+wc -l /mnt/user-data/outputs/AutoPiano_Fluent.lua

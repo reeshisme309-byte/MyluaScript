@@ -1,0 +1,745 @@
+--[[
+    AUTO PIANO - STYEARX FLUENT-MODDED EDITION
+    Library: https://github.com/StyearX/Fluent-modded (strictly modded Fluent, no vanilla fallback)
+    Includes: Floating Draggable Open/Close GUI Toggle Button + Keybind
+]]
+
+if getgenv and getgenv().AutoPianoModdedCleanup then
+    pcall(getgenv().AutoPianoModdedCleanup)
+end
+
+-- ============================================================================
+-- 1. SERVICES & GUI PARENT
+-- ============================================================================
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local VirtualInputManager = nil
+pcall(function()
+    VirtualInputManager = game:GetService("VirtualInputManager")
+end)
+
+local LocalPlayer = Players.LocalPlayer
+
+local function GetGuiRoot()
+    local ok, parent = pcall(function()
+        if typeof(gethui) == "function" then
+            return gethui()
+        end
+        return game:GetService("CoreGui")
+    end)
+    if ok and parent then
+        return parent
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Track existing ScreenGuis so toggling visibility only affects Fluent-modded's GUI
+local ExistingGuis = {}
+for _, obj in ipairs(GetGuiRoot():GetChildren()) do
+    if obj:IsA("ScreenGui") then
+        ExistingGuis[obj] = true
+    end
+end
+
+-- ============================================================================
+-- 2. LOAD STYEARX/FLUENT-MODDED ONLY
+-- ============================================================================
+local Fluent = nil
+do
+    local moddedUrls = {
+        "https://raw.githubusercontent.com/StyearX/Fluent-modded/refs/heads/main/Fluent/Example/FluentPro%20Example",
+        "https://raw.githubusercontent.com/StyearX/Fluent-modded/main/Fluent/Example/FluentPro%20Example",
+        "https://raw.githubusercontent.com/StyearX/Fluent-modded/refs/heads/main/Fluent/Fluent.lua",
+        "https://raw.githubusercontent.com/StyearX/Fluent-modded/main/Fluent/Fluent.lua",
+    }
+
+    for _, url in ipairs(moddedUrls) do
+        local ok, code = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and type(code) == "string" and #code > 200 and not code:match("^404:") then
+            local fn, err = loadstring(code)
+            if type(fn) == "function" then
+                local runOk, lib = pcall(fn)
+                if runOk and type(lib) == "table" and type(lib.CreateWindow) == "function" then
+                    Fluent = lib
+                    break
+                end
+            else
+                warn("[AutoPiano] Compile error from StyearX/Fluent-modded: " .. tostring(err))
+            end
+        end
+    end
+end
+
+if not Fluent then
+    warn("[AutoPiano] Could not load StyearX/Fluent-modded. The repo may be missing a single-file bundle or HttpGet failed.")
+    return
+end
+
+-- ============================================================================
+-- 3. 61-KEY PIANO MAPPING, TRANSPOSITION & SHEET PARSER
+-- ============================================================================
+local SCALE_CHARS = "1!2@34$5%6^78*9(0qQwWeErtTyYuiIoOpPasSdDfgGhHjJklLzZxcCvVbBnm"
+local CHAR_TO_INDEX = {}
+local INDEX_TO_CHAR = {}
+local NOTE_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+
+for i = 1, #SCALE_CHARS do
+    local ch = SCALE_CHARS:sub(i, i)
+    CHAR_TO_INDEX[ch] = i
+    INDEX_TO_CHAR[i] = ch
+end
+
+local function IndexToNoteName(idx)
+    if idx == 61 then return "C7" end
+    local octave = math.floor((idx - 1) / 12) + 2
+    local semitone = ((idx - 1) % 12) + 1
+    return NOTE_NAMES[semitone] .. tostring(octave)
+end
+
+local SHIFT_MAP = {
+    ["!"] = Enum.KeyCode.One,   ["@"] = Enum.KeyCode.Two,
+    ["$"] = Enum.KeyCode.Four,  ["%"] = Enum.KeyCode.Five,
+    ["^"] = Enum.KeyCode.Six,   ["*"] = Enum.KeyCode.Eight,
+    ["("] = Enum.KeyCode.Nine,
+}
+
+local NUM_MAP = {
+    ["1"] = Enum.KeyCode.One,   ["2"] = Enum.KeyCode.Two,
+    ["3"] = Enum.KeyCode.Three, ["4"] = Enum.KeyCode.Four,
+    ["5"] = Enum.KeyCode.Five,  ["6"] = Enum.KeyCode.Six,
+    ["7"] = Enum.KeyCode.Seven, ["8"] = Enum.KeyCode.Eight,
+    ["9"] = Enum.KeyCode.Nine,  ["0"] = Enum.KeyCode.Zero,
+}
+
+local function CharToKeyInfo(ch)
+    if SHIFT_MAP[ch] then
+        return SHIFT_MAP[ch], true
+    elseif NUM_MAP[ch] then
+        return NUM_MAP[ch], false
+    elseif ch:match("%u") then
+        return Enum.KeyCode[ch], true
+    elseif ch:match("%l") then
+        return Enum.KeyCode[ch:upper()], false
+    end
+    return nil, false
+end
+
+local function TransposeChar(ch, semitones)
+    local idx = CHAR_TO_INDEX[ch]
+    if not idx then return ch end
+    local newIdx = math.clamp(idx + semitones, 1, #SCALE_CHARS)
+    return INDEX_TO_CHAR[newIdx]
+end
+
+local function ParseSheet(rawSheet)
+    local events = {}
+    local errors = {}
+
+    if type(rawSheet) ~= "string" or rawSheet:match("^%s*$") then
+        return events, {"Sheet is empty."}
+    end
+
+    local i, len, noteCount = 1, #rawSheet, 0
+    while i <= len do
+        local ch = rawSheet:sub(i, i)
+
+        if ch == "[" then
+            local closePos = rawSheet:find("]", i + 1, true)
+            if not closePos then
+                table.insert(errors, "Unclosed '[' bracket at position " .. i)
+                break
+            end
+            local inside = rawSheet:sub(i + 1, closePos - 1)
+            local chord = {}
+            for j = 1, #inside do
+                local c = inside:sub(j, j)
+                if CHAR_TO_INDEX[c] then
+                    table.insert(chord, c)
+                    noteCount += 1
+                elseif not c:match("%s") then
+                    table.insert(errors, "Invalid note '" .. c .. "' inside [...]")
+                end
+            end
+            if #chord > 0 then
+                table.insert(events, { notes = chord, beats = 1.0 })
+            end
+            i = closePos + 1
+
+        elseif ch == "{" then
+            local closePos = rawSheet:find("}", i + 1, true)
+            if not closePos then
+                table.insert(errors, "Unclosed '{' brace at position " .. i)
+                break
+            end
+            local inside = rawSheet:sub(i + 1, closePos - 1)
+            local arp = {}
+            for j = 1, #inside do
+                local c = inside:sub(j, j)
+                if CHAR_TO_INDEX[c] then
+                    table.insert(arp, c)
+                    noteCount += 1
+                end
+            end
+            local step = (#arp > 0) and (1.0 / #arp) or 0.25
+            for _, n in ipairs(arp) do
+                table.insert(events, { notes = { n }, beats = step })
+            end
+            i = closePos + 1
+
+        elseif CHAR_TO_INDEX[ch] then
+            table.insert(events, { notes = { ch }, beats = 1.0 })
+            noteCount += 1
+            i += 1
+
+        elseif ch == " " then
+            if #events > 0 then events[#events].beats += 0.45 end
+            i += 1
+
+        elseif ch == "-" or ch == "|" then
+            if #events > 0 then events[#events].beats += 0.85 end
+            i += 1
+
+        elseif ch == "\n" or ch == "\r" or ch == "/" then
+            if #events > 0 then events[#events].beats += 1.0 end
+            i += 1
+
+        else
+            i += 1
+        end
+    end
+
+    if noteCount == 0 then
+        table.insert(errors, "No valid piano notes found.")
+    end
+
+    return events, errors
+end
+
+local function EstimateSeconds(events, bpm)
+    local beats = 0
+    for _, ev in ipairs(events) do
+        beats += ev.beats
+    end
+    return beats * (60 / math.max(bpm, 20))
+end
+
+local function FormatClock(sec)
+    sec = math.max(0, math.floor(sec + 0.5))
+    return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+local function TriggerNote(char, transposeOffset)
+    local actual = TransposeChar(char, transposeOffset)
+    local idx = CHAR_TO_INDEX[actual]
+    if not idx then return end
+
+    if VirtualInputManager then
+        local kc, needsShift = CharToKeyInfo(actual)
+        if kc then
+            pcall(function()
+                if needsShift then
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+                end
+                VirtualInputManager:SendKeyEvent(true, kc, false, game)
+                task.delay(0.045, function()
+                    pcall(function()
+                        VirtualInputManager:SendKeyEvent(false, kc, false, game)
+                        if needsShift then
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+                        end
+                    end)
+                end)
+            end)
+        end
+    end
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("RemoteEvent") and (obj.Name == "PlayNote" or obj.Name == "NotePressed" or obj.Name == "KeyPressed") then
+            pcall(function()
+                obj:FireServer(IndexToNoteName(idx))
+            end)
+            break
+        end
+    end
+end
+
+-- ============================================================================
+-- 4. PLAYABLE SONG LIST
+-- ============================================================================
+local Songs = {
+    {
+        title = "Fur Elise - Beethoven",
+        bpm = 128,
+        sheet = "f D f D f a d s [6p] 0 e t u p [3a] 0 W u O a [6s] 0 e u f D f D f a d s [6p] 0 e t u p [3a] 0 W u s a [6p]"
+    },
+    {
+        title = "Canon in D - Pachelbel",
+        bpm = 104,
+        sheet = "[8f] w t u [5d] 9 w r [6s] 0 e t [3a] 7 0 w [4p] 8 q e [1o] 5 8 0 [4p] 8 q e [5a] 9 w r | [8h] w [tg] [uf] [5d] 9 [ws] [ra] [6p] 0 [eo] [ti] [3u] 7 [0y] [wt] [8u]"
+    },
+    {
+        title = "Moonlight Sonata (1st Mvt)",
+        bpm = 96,
+        sheet = "[6e] u p e u p e u p e u p [4q] t i q t i [29] e y 9 e y [50] r u 0 r u [30] W u 0 W u [6e] u p e u p"
+    },
+    {
+        title = "Jingle Bells",
+        bpm = 132,
+        sheet = "[8u] u [8u] | [8u] u [8u] | [8u] o [8t] y [8u] | [4i] i [4i] i [4i] [8u] u u [8u] y y [8u] y [5o]"
+    },
+    {
+        title = "Sakura Breeze (Anime Ballad)",
+        bpm = 114,
+        sheet = "[4q] e t i o p [5w] r y o p a [6e] t u p a s [30] w r u o a | [4q] i o p s a [5w] o p a d s [6e] p a s f d [6s]"
+    },
+    {
+        title = "Tokyo Drift Phonk (808 Keys)",
+        bpm = 160,
+        sheet = "[6p] [6p] [6a] [6p] [6s] [6p] [6d] [6s] [6p] [6p] [6a] [6p] [4f] [4d] [3s] [3a] | [6j] [6h] [6f] [6d] [6s] [6a] [6p]"
+    }
+}
+
+for _, s in ipairs(Songs) do
+    local parsed = ParseSheet(s.sheet)
+    s._events = parsed
+    s._duration = EstimateSeconds(parsed, s.bpm)
+end
+
+-- ============================================================================
+-- 5. PLAYBACK CONTROLLER
+-- ============================================================================
+local State = {
+    CurrentSong = Songs[1],
+    Events = Songs[1]._events,
+    IsPlaying = false,
+    IsPaused = false,
+    Loop = false,
+    BPM = Songs[1].bpm,
+    Transpose = 0,
+    Index = 1,
+    Elapsed = 0,
+    Total = Songs[1]._duration,
+    Token = 0,
+    LastNote = "Ready"
+}
+
+local UI = {
+    RefreshPlayer = function() end,
+    Notify = function(title, content)
+        pcall(function()
+            Fluent:Notify({
+                Title = title,
+                Content = content,
+                Duration = 3
+            })
+        end)
+    end
+}
+
+local function StopSong(silent)
+    State.Token += 1
+    State.IsPlaying = false
+    State.IsPaused = false
+    State.Index = 1
+    State.Elapsed = 0
+    State.LastNote = "Stopped"
+    UI.RefreshPlayer()
+    if not silent then
+        UI.Notify("Auto Piano", "Playback stopped.")
+    end
+end
+
+local function StartSong(song)
+    if not song then return end
+    local evs = song._events
+    if not evs or #evs == 0 then
+        local parsed, errs = ParseSheet(song.sheet)
+        if #errs > 0 then
+            UI.Notify("Sheet Error", errs[1])
+            return
+        end
+        evs = parsed
+        song._events = parsed
+    end
+
+    StopSong(true)
+    State.CurrentSong = song
+    State.Events = evs
+    State.BPM = song.bpm or 120
+    State.Total = EstimateSeconds(evs, State.BPM)
+    State.Elapsed = 0
+    State.Index = 1
+    State.IsPlaying = true
+    State.IsPaused = false
+    State.Token += 1
+
+    local activeToken = State.Token
+    UI.RefreshPlayer()
+    UI.Notify("Now Playing", song.title .. " (" .. State.BPM .. " BPM)")
+
+    task.spawn(function()
+        while State.IsPlaying and State.Token == activeToken do
+            if State.IsPaused then
+                task.wait(0.05)
+                continue
+            end
+
+            if State.Index > #State.Events then
+                if State.Loop then
+                    State.Index = 1
+                    State.Elapsed = 0
+                else
+                    StopSong(true)
+                    State.LastNote = "Completed"
+                    UI.RefreshPlayer()
+                    return
+                end
+            end
+
+            local ev = State.Events[State.Index]
+            if ev then
+                local labels = {}
+                for _, ch in ipairs(ev.notes) do
+                    local tr = TransposeChar(ch, State.Transpose)
+                    local idx = CHAR_TO_INDEX[tr]
+                    if idx then
+                        table.insert(labels, IndexToNoteName(idx))
+                    end
+                    TriggerNote(ch, State.Transpose)
+                end
+                if #labels > 0 then
+                    State.LastNote = table.concat(labels, " + ")
+                end
+
+                local waitTime = math.max(ev.beats * (60 / math.max(State.BPM, 20)), 0.025)
+                State.Index += 1
+                UI.RefreshPlayer()
+
+                local waited = 0
+                while waited < waitTime do
+                    if not State.IsPlaying or State.Token ~= activeToken then return end
+                    if State.IsPaused then
+                        task.wait(0.05)
+                    else
+                        local dt = task.wait(math.min(0.03, waitTime - waited))
+                        waited += dt
+                        State.Elapsed = math.min(State.Total, State.Elapsed + dt)
+                        UI.RefreshPlayer()
+                    end
+                end
+            else
+                State.Index += 1
+            end
+        end
+    end)
+end
+
+-- ============================================================================
+-- 6. CREATE FLUENT-MODDED WINDOW + OPEN/CLOSE GUI TOGGLE
+-- ============================================================================
+local Window = Fluent:CreateWindow({
+    Title = "Auto Piano Mega GUI",
+    SubTitle = "StyearX Fluent-modded",
+    TabWidth = 150,
+    Size = UDim2.fromOffset(620, 430),
+    Acrylic = false,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.RightControl
+})
+
+local GuiOpen = true
+local ToggleKey = Enum.KeyCode.RightControl
+
+local function GetFluentModdedGuis()
+    local list = {}
+    for _, obj in ipairs(GetGuiRoot():GetChildren()) do
+        if obj:IsA("ScreenGui") and not ExistingGuis[obj] and obj.Name ~= "FluentModdedToggleGui" then
+            table.insert(list, obj)
+        end
+    end
+    return list
+end
+
+local function SetGuiOpen(open)
+    GuiOpen = open
+    for _, sg in ipairs(GetFluentModdedGuis()) do
+        sg.Enabled = GuiOpen
+    end
+    pcall(function()
+        if Window and Window.Root then
+            Window.Root.Visible = GuiOpen
+        end
+    end)
+end
+
+local ToggleGui = Instance.new("ScreenGui")
+ToggleGui.Name = "FluentModdedToggleGui"
+ToggleGui.ResetOnSpawn = false
+pcall(function()
+    if typeof(syn) == "table" and typeof(syn.protect_gui) == "function" then
+        syn.protect_gui(ToggleGui)
+    end
+end)
+ToggleGui.Parent = GetGuiRoot()
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "OpenCloseGuiToggle"
+ToggleBtn.Size = UDim2.fromOffset(124, 34)
+ToggleBtn.Position = UDim2.new(0, 14, 0.5, -17)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(28, 30, 42)
+ToggleBtn.TextColor3 = Color3.fromRGB(242, 245, 255)
+ToggleBtn.Text = "🎹 GUI: OPEN"
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 12
+ToggleBtn.Active = true
+ToggleBtn.Draggable = true
+ToggleBtn.ZIndex = 999
+ToggleBtn.Parent = ToggleGui
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 8)
+btnCorner.Parent = ToggleBtn
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color = Color3.fromRGB(114, 92, 246)
+btnStroke.Thickness = 1.5
+btnStroke.Parent = ToggleBtn
+
+local function ToggleGuiVisibility()
+    SetGuiOpen(not GuiOpen)
+    ToggleBtn.Text = GuiOpen and "🎹 GUI: OPEN" or "🎹 GUI: CLOSED"
+    btnStroke.Color = GuiOpen and Color3.fromRGB(114, 92, 246) or Color3.fromRGB(239, 68, 68)
+end
+
+ToggleBtn.MouseButton1Click:Connect(ToggleGuiVisibility)
+
+local keyConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == ToggleKey then
+        ToggleGuiVisibility()
+    end
+end)
+
+getgenv().AutoPianoModdedCleanup = function()
+    StopSong(true)
+    if keyConn then keyConn:Disconnect() end
+    if ToggleGui then ToggleGui:Destroy() end
+    pcall(function()
+        if Window and Window.Destroy then
+            Window:Destroy()
+        end
+    end)
+    for _, sg in ipairs(GetFluentModdedGuis()) do
+        pcall(function() sg:Destroy() end)
+    end
+end
+
+-- ============================================================================
+-- 7. FLUENT-MODDED TABS & CONTROLS
+-- ============================================================================
+local Tabs = {
+    Player = Window:AddTab({ Title = "Auto Piano", Icon = "music" }),
+    Library = Window:AddTab({ Title = "Song Library", Icon = "list" }),
+    Editor = Window:AddTab({ Title = "Sheet Editor", Icon = "file-text" }),
+    GuiTab = Window:AddTab({ Title = "GUI Toggle", Icon = "eye" }),
+}
+
+local StatusParagraph = Tabs.Player:AddParagraph({
+    Title = "Now Playing: " .. State.CurrentSong.title,
+    Content = "Note: Ready | Time: 0:00 / " .. FormatClock(State.Total) .. " | BPM: " .. State.BPM .. " | Transpose: 0"
+})
+
+Tabs.Player:AddButton({
+    Title = "Play Selected Song",
+    Description = "Start playback from the beginning",
+    Callback = function()
+        StartSong(State.CurrentSong)
+    end
+})
+
+Tabs.Player:AddButton({
+    Title = "Pause / Resume",
+    Description = "Pause or resume current playback",
+    Callback = function()
+        if State.IsPlaying then
+            State.IsPaused = not State.IsPaused
+            UI.RefreshPlayer()
+            UI.Notify("Auto Piano", State.IsPaused and "Paused" or "Resumed")
+        end
+    end
+})
+
+Tabs.Player:AddButton({
+    Title = "Stop Playback",
+    Description = "Stop playback and reset progress",
+    Callback = function()
+        StopSong(false)
+    end
+})
+
+Tabs.Player:AddToggle("LoopToggle", {
+    Title = "Loop Song",
+    Default = false,
+    Callback = function(val)
+        State.Loop = val
+    end
+})
+
+Tabs.Player:AddSlider("BpmSlider", {
+    Title = "Playback BPM",
+    Min = 40,
+    Max = 240,
+    Default = State.BPM,
+    Rounding = 1,
+    Callback = function(val)
+        State.BPM = val
+        State.Total = EstimateSeconds(State.Events, State.BPM)
+        UI.RefreshPlayer()
+    end
+})
+
+Tabs.Player:AddSlider("TransposeSlider", {
+    Title = "Transpose (Semitones)",
+    Min = -12,
+    Max = 12,
+    Default = 0,
+    Rounding = 1,
+    Callback = function(val)
+        State.Transpose = val
+        UI.RefreshPlayer()
+    end
+})
+
+UI.RefreshPlayer = function()
+    local statusTag = State.IsPlaying and (State.IsPaused and "Paused" or "Playing") or "Idle"
+    pcall(function()
+        StatusParagraph:SetDesc(string.format(
+            "[%s] %s | Note: %s | %s / %s | BPM: %d | Transpose: %+d",
+            statusTag,
+            State.CurrentSong.title,
+            State.LastNote,
+            FormatClock(State.Elapsed),
+            FormatClock(State.Total),
+            State.BPM,
+            State.Transpose
+        ))
+    end)
+end
+
+-- Song Library Tab
+local songNames = {}
+local songByName = {}
+for _, s in ipairs(Songs) do
+    table.insert(songNames, s.title)
+    songByName[s.title] = s
+end
+
+local SelectedSongName = songNames[1]
+
+Tabs.Library:AddDropdown("SongDropdown", {
+    Title = "Choose a Song",
+    Values = songNames,
+    Multi = false,
+    Default = SelectedSongName,
+    Callback = function(val)
+        SelectedSongName = val
+        if songByName[val] then
+            State.CurrentSong = songByName[val]
+            State.Events = State.CurrentSong._events
+            State.BPM = State.CurrentSong.bpm
+            State.Total = State.CurrentSong._duration
+            UI.RefreshPlayer()
+        end
+    end
+})
+
+Tabs.Library:AddButton({
+    Title = "Play Chosen Song",
+    Callback = function()
+        local s = songByName[SelectedSongName]
+        if s then StartSong(s) end
+    end
+})
+
+Tabs.Library:AddButton({
+    Title = "Play Random Song",
+    Callback = function()
+        local s = Songs[math.random(1, #Songs)]
+        SelectedSongName = s.title
+        StartSong(s)
+    end
+})
+
+-- Sheet Editor Tab
+local CustomTitle = "Custom Piano Sheet"
+local CustomBpm = 120
+local CustomRawSheet = Songs[1].sheet
+
+Tabs.Editor:AddInput("SheetTitleInput", {
+    Title = "Song Title",
+    Default = CustomTitle,
+    Callback = function(val) CustomTitle = val end
+})
+
+Tabs.Editor:AddInput("SheetBpmInput", {
+    Title = "BPM",
+    Default = tostring(CustomBpm),
+    Numeric = true,
+    Callback = function(val) CustomBpm = tonumber(val) or 120 end
+})
+
+Tabs.Editor:AddInput("SheetRawInput", {
+    Title = "Piano Sheet Notes",
+    Default = CustomRawSheet,
+    Callback = function(val) CustomRawSheet = val end
+})
+
+Tabs.Editor:AddButton({
+    Title = "Validate & Play Custom Sheet",
+    Callback = function()
+        local evs, errs = ParseSheet(CustomRawSheet)
+        if #errs > 0 then
+            UI.Notify("Invalid Sheet", errs[1])
+            return
+        end
+        StartSong({
+            title = CustomTitle ~= "" and CustomTitle or "Custom Sheet",
+            bpm = CustomBpm,
+            sheet = CustomRawSheet,
+            _events = evs,
+            _duration = EstimateSeconds(evs, CustomBpm)
+        })
+    end
+})
+
+-- GUI Toggle Tab
+Tabs.GuiTab:AddButton({
+    Title = "Toggle Open / Close GUI",
+    Description = "Show or hide the Fluent-modded window",
+    Callback = function()
+        ToggleGuiVisibility()
+    end
+})
+
+Tabs.GuiTab:AddKeybind("GuiToggleKeybind", {
+    Title = "GUI Toggle Keybind",
+    Mode = "Toggle",
+    Default = "RightControl",
+    Callback = function()
+        ToggleGuiVisibility()
+    end,
+    ChangedCallback = function(newKey)
+        if typeof(newKey) == "EnumItem" then
+            ToggleKey = newKey
+        end
+    end
+})
+
+pcall(function()
+    Window:SelectTab(1)
+end)
+UI.RefreshPlayer()
+SetGuiOpen(true)
